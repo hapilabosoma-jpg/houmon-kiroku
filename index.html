@@ -67,8 +67,7 @@
       <div class="card">
         <label>身体</label><textarea id="t_body"></textarea>
         <label>精神</label><textarea id="t_mind"></textarea>
-        <label>お薬</label><textarea id="t_medicine"></textarea>
-        <label>施設の方へのお願い</label><textarea id="t_request"></textarea>
+        <label>その他</label><textarea id="t_other"></textarea>
         <div class="note">内容を確認し、違う所は直してから送ってください。</div>
       </div>
       <a id="lineBtn" class="btn line" href="#" target="_blank" rel="noopener" onclick="return toLine()">LINEで送る</a>
@@ -81,7 +80,7 @@
 <script>
 var PIN = '', rec = null, chunks = [], stream = null, t0 = 0, tick = null, busy = false;
 var MAX_SEC = 20 * 60;   // Geminiに一度に送れる大きさ（約20MB）に収めるため最長20分
-var SECTIONS = [['body', '身体'], ['mind', '精神'], ['medicine', 'お薬'], ['request', '施設の方へのお願い']];
+var SECTIONS = [['body', '身体'], ['mind', '精神'], ['other', 'その他']];
 function ls(k, v) { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) {} }
 function $(id) { return document.getElementById(id); }
 function msg(text, cls) { var m = $('msg'); m.textContent = text; m.className = 'msg ' + (cls || ''); if (text) window.scrollTo(0, 0); }
@@ -166,8 +165,8 @@ function send(blob) {
   r.onload = function () {
     var b64 = String(r.result).split(',')[1];
     call('summarize', PIN, b64, mime).then(function (res) {
-      SECTIONS.forEach(function (s) { $('t_' + s[0]).value = res[s[0]].map(function (x) { return '・' + x; }).join('\n'); });
-      var empty = SECTIONS.every(function (s) { return !res[s[0]].length; });
+      SECTIONS.forEach(function (s) { $('t_' + s[0]).value = (res[s[0]] || []).map(function (x) { return '・' + x; }).join('\n'); });
+      var empty = SECTIONS.every(function (s) { return !(res[s[0]] || []).length; });
       $('result').classList.remove('hidden');
       msg(empty ? '会話の内容を聞き取れませんでした。録音をやり直すか、手で入力してください。' : 'まとめました。確認して送ってください。', empty ? 'warn' : 'ok');
     }).catch(function (e) { msg(e.message, 'err'); })
