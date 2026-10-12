@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>訪問の記録</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif; background: #f4f5f7; color: #222; font-size: 16px; }
+  header { background: #06a35a; color: #fff; padding: 14px 16px; font-size: 18px; font-weight: 600; }
+  main { padding: 16px; max-width: 520px; margin: 0 auto; }
+  .card { background: #fff; border-radius: 12px; padding: 16px; margin-bottom: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  label { display: block; font-size: 13px; color: #666; margin: 10px 0 4px; }
+  input, textarea { width: 100%; font-size: 17px; padding: 10px; border: 1px solid #ccc; border-radius: 8px; background: #fff; font-family: inherit; }
+  textarea { min-height: 80px; line-height: 1.5; }
+  .row2 { display: flex; gap: 10px; } .row2 > div { flex: 1; }
+  button, .btn { display: block; width: 100%; font-size: 18px; padding: 14px; border: 0; border-radius: 10px; background: #1a73e8; color: #fff; font-weight: 600; margin-top: 12px; text-align: center; text-decoration: none; }
+  button.sub { background: #e8eaed; color: #222; }
+  button:disabled { opacity: .5; }
+  .rec { background: #d93025; font-size: 20px; padding: 22px; }
+  .rec.on { background: #5f6368; }
+  .line { background: #06c755; }
+  .timer { text-align: center; font-size: 34px; font-variant-numeric: tabular-nums; margin-top: 10px; }
+  .dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; background: #d93025; margin-right: 8px; vertical-align: middle; animation: blink 1s infinite; }
+  @keyframes blink { 50% { opacity: .2; } }
+  .file { display: block; text-align: center; padding: 14px 10px; border: 2px dashed #1a73e8; border-radius: 10px; color: #1a73e8; font-size: 16px; font-weight: 600; background: #fff; margin-top: 12px; }
+  .file input { display: none; }
+  .msg { padding: 12px; border-radius: 8px; margin-bottom: 14px; display: none; white-space: pre-wrap; }
+  .msg.ok { background: #e6f4ea; color: #137333; display: block; }
+  .msg.err { background: #fce8e6; color: #c5221f; display: block; }
+  .msg.warn { background: #fef7e0; color: #8a5a00; display: block; }
+  .note { font-size: 13px; color: #888; margin-top: 8px; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<header>訪問の記録 → LINE</header>
+<main>
+  <div id="msg" class="msg"></div>
+
+  <div id="pinCard" class="card hidden">
+    <label>暗証番号</label>
+    <input id="pin" type="password" inputmode="numeric">
+    <button onclick="start()">開く</button>
+  </div>
+
+  <div id="app" class="hidden">
+    <div class="card">
+      <div class="row2">
+        <div><label>施設名</label><input id="facility" placeholder="〇〇ホーム"></div>
+        <div><label>看護師</label><input id="nurse" placeholder="名前"></div>
+      </div>
+      <label>患者さん（フルネーム）</label><input id="patient" placeholder="山田 太郎">
+    </div>
+
+    <div class="card" id="recCard">
+      <button id="recBtn" class="rec" onclick="toggleRec()">● 録音を始める</button>
+      <div id="timer" class="timer hidden"></div>
+      <label class="file">🎙 録音済みの音声ファイルを選ぶ
+        <input id="audioFile" type="file" accept="audio/*" onchange="onFile(this)">
+      </label>
+      <div class="note">録音は患者さんの了解を得てから。録音と文章はどこにも保存されません。</div>
+    </div>
+
+    <div id="result" class="hidden">
+      <div class="card">
+        <label>身体</label><textarea id="t_body"></textarea>
+        <label>精神</label><textarea id="t_mind"></textarea>
+        <label>お薬</label><textarea id="t_medicine"></textarea>
+        <label>施設の方へのお願い</label><textarea id="t_request"></textarea>
+        <div class="note">内容を確認し、違う所は直してから送ってください。</div>
+      </div>
+      <a id="lineBtn" class="btn line" href="#" target="_blank" rel="noopener" onclick="return toLine()">LINEで送る</a>
+      <button class="sub" onclick="copyText()">文章をコピー</button>
+      <button class="sub" onclick="reset()">次の患者さんへ（消去）</button>
+    </div>
+  </div>
+</main>
+
+<script>
+var PIN = '', rec = null, chunks = [], stream = null, t0 = 0, tick = null, busy = false;
+var MAX_SEC = 20 * 60;   // Geminiに一度に送れる大きさ（約20MB）に収めるため最長20分
+var SECTIONS = [['body', '身体'], ['mind', '精神'], ['medicine', 'お薬'], ['request', '施設の方へのお願い']];
+function ls(k, v) { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) {} }
+function $(id) { return document.getElementById(id); }
+function msg(text, cls) { var m = $('msg'); m.textContent = text; m.className = 'msg ' + (cls || ''); if (text) window.scrollTo(0, 0); }
+// まとめはApps Script側（GeminiのキーはApps Scriptだけが持つ）。この画面はマイクを使うためApps Scriptの外に置いている
+var API = 'https://script.google.com/macros/s/AKfycbxPg0bK6h_F88rNADmS-HxV_kpS83bZwxDMriXtJaf8ppWbQdplDVzbErZp-tw9FNX4/exec';
+function call(fn, pin, b64, mime) {
+  return fetch(API, { method: 'POST', body: JSON.stringify({ fn: fn, pin: pin, b64: b64, mime: mime }) })
+    .then(function (r) { if (!r.ok) throw new Error('通信に失敗しました（' + r.status + '）'); return r.json(); })
+    .catch(function (e) { throw new Error(/通信/.test(e.message) ? e.message : '通信に失敗しました。電波の良い所でもう一度試してください。'); })
+    .then(function (j) { if (!j.ok) throw new Error(j.error); return j.result; });
+}
+
+function start() {
+  PIN = $('pin').value || ls('pin') || '';
+  call('getInit', PIN).then(function () {
+    ls('pin', PIN);
+    $('pinCard').classList.add('hidden'); $('app').classList.remove('hidden'); msg('');
+    $('facility').value = ls('facility') || ''; $('nurse').value = ls('nurse') || '';
+  }).catch(function (e) {
+    if (/暗証番号/.test(e.message)) { ls('pin', ''); $('pinCard').classList.remove('hidden'); if ($('pin').value) msg(e.message, 'err'); }
+    else msg(e.message, 'err');
+  });
+}
+
+/* ---------- 録音 ---------- */
+function pickMime() {
+  if (!window.MediaRecorder) return '';
+  var list = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'];
+  for (var i = 0; i < list.length; i++) if (MediaRecorder.isTypeSupported(list[i])) return list[i];
+  return '';
+}
+
+function toggleRec() {
+  if (busy) return;
+  if (rec && rec.state === 'recording') { rec.stop(); return; }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
+    msg('この画面では録音できません。スマホのボイスメモ等で録音し、「録音済みの音声ファイルを選ぶ」から選んでください。', 'warn');
+    return;
+  }
+  navigator.mediaDevices.getUserMedia({ audio: true }).then(function (s) {
+    stream = s; chunks = [];
+    var mime = pickMime();
+    rec = new MediaRecorder(s, mime ? { mimeType: mime, audioBitsPerSecond: 32000 } : { audioBitsPerSecond: 32000 });
+    rec.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
+    rec.onstop = function () {
+      clearInterval(tick); stream.getTracks().forEach(function (t) { t.stop(); });
+      $('recBtn').textContent = '● 録音を始める'; $('recBtn').classList.remove('on'); $('timer').classList.add('hidden');
+      var blob = new Blob(chunks, { type: rec.mimeType || mime || 'audio/webm' });
+      chunks = [];
+      send(blob);
+    };
+    rec.start(1000);
+    t0 = Date.now(); showTime(); tick = setInterval(showTime, 500);
+    $('recBtn').textContent = '■ 録音を止めてまとめる'; $('recBtn').classList.add('on'); $('timer').classList.remove('hidden');
+    $('result').classList.add('hidden'); msg('');
+  }).catch(function (e) {
+    msg('マイクを使えませんでした（' + e.name + '）。\nスマホのボイスメモ等で録音し、「録音済みの音声ファイルを選ぶ」から選んでください。', 'warn');
+  });
+}
+
+function showTime() {
+  var s = Math.floor((Date.now() - t0) / 1000);
+  $('timer').innerHTML = '<span class="dot"></span>' + Math.floor(s / 60) + ':' + ('0' + s % 60).slice(-2);
+  if (s >= MAX_SEC && rec && rec.state === 'recording') { rec.stop(); msg('20分に達したので録音を止めました。', 'warn'); }
+}
+
+function onFile(input) {
+  var f = input.files && input.files[0];
+  input.value = '';
+  if (!f) return;
+  if (f.size > 14 * 1024 * 1024) { msg('ファイルが大きすぎます（14MBまで）。20分以内の録音にしてください。', 'err'); return; }
+  send(f);
+}
+
+/* ---------- まとめ ---------- */
+function send(blob) {
+  if (!blob.size) { msg('録音が空でした。もう一度録音してください。', 'err'); return; }
+  busy = true; $('recBtn').disabled = true;
+  msg('まとめています…（1〜2分かかることがあります）', 'ok');
+  var mime = blob.type || 'audio/mp4';
+  var r = new FileReader();
+  r.onload = function () {
+    var b64 = String(r.result).split(',')[1];
+    call('summarize', PIN, b64, mime).then(function (res) {
+      SECTIONS.forEach(function (s) { $('t_' + s[0]).value = res[s[0]].map(function (x) { return '・' + x; }).join('\n'); });
+      var empty = SECTIONS.every(function (s) { return !res[s[0]].length; });
+      $('result').classList.remove('hidden');
+      msg(empty ? '会話の内容を聞き取れませんでした。録音をやり直すか、手で入力してください。' : 'まとめました。確認して送ってください。', empty ? 'warn' : 'ok');
+    }).catch(function (e) { msg(e.message, 'err'); })
+      .then(function () { busy = false; $('recBtn').disabled = false; });
+  };
+  r.readAsDataURL(blob);
+}
+
+function buildText() {
+  var d = new Date();
+  var head = [
+    '【訪問看護 報告】' + (d.getMonth() + 1) + '/' + d.getDate() + ' ' + d.getHours() + ':' + ('0' + d.getMinutes()).slice(-2),
+    ($('facility').value ? $('facility').value + ' ' : '') + ($('patient').value ? $('patient').value + ' 様' : '')
+  ].filter(function (s) { return s.trim(); });
+  var body = [];
+  SECTIONS.forEach(function (s) {
+    var v = $('t_' + s[0]).value.trim();
+    if (v) body.push('■' + s[1] + '\n' + v);
+  });
+  return head.join('\n') + '\n\n' + (body.join('\n\n') || '特に変わりありません。') +
+    ($('nurse').value ? '\n\n看護師：' + $('nurse').value : '');
+}
+
+function saveNames() { ls('facility', $('facility').value); ls('nurse', $('nurse').value); }
+
+function toLine() {
+  if (!$('patient').value.trim()) { msg('患者さんの名前を入れてください。', 'err'); return false; }
+  saveNames();
+  $('lineBtn').href = 'https://line.me/R/share?text=' + encodeURIComponent(buildText());
+  return true;
+}
+
+function copyText() {
+  saveNames();
+  var t = buildText();
+  var done = function () { msg('コピーしました。LINEに貼り付けて送ってください。', 'ok'); };
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, function () { fallbackCopy(t); done(); });
+  else { fallbackCopy(t); done(); }
+}
+function fallbackCopy(t) {
+  var a = document.createElement('textarea'); a.value = t; document.body.appendChild(a); a.select();
+  try { document.execCommand('copy'); } catch (e) {}
+  a.remove();
+}
+
+function reset() {
+  SECTIONS.forEach(function (s) { $('t_' + s[0]).value = ''; });
+  $('patient').value = ''; $('result').classList.add('hidden'); msg('');
+}
+
+window.onload = function () {
+  if (ls('pin')) start(); else $('pinCard').classList.remove('hidden');
+};
+</script>
+</body>
+</html>
